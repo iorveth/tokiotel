@@ -59,6 +59,7 @@ enum Service {
     Room,
     Rooms,
     Peers,
+    ChangeRoom,
 }
 
 lazy_static! {
@@ -68,6 +69,7 @@ lazy_static! {
         commands.insert(BytesMut::from("/room"), Service::Room);
         commands.insert(BytesMut::from("/rooms"), Service::Rooms);
         commands.insert(BytesMut::from("/peers"), Service::Peers);
+        commands.insert(BytesMut::from("/change_room"), Service::ChangeRoom);
         commands
     };
 }
@@ -157,11 +159,12 @@ impl SharedRooms {
             s.extend_from_slice(room);
             i += 1;
             if i % 5 == 0 {
-                s.extend_from_slice(b"\r\n");
+                s.extend_from_slice(b",\r\n");
             } else {
-                s.extend_from_slice(b" ");
+                s.extend_from_slice(b", ");
             }
         });
+        s.extend_from_slice(b"\r\n");
         s
     }
 }
@@ -193,7 +196,6 @@ impl Peer {
             peer.insert(addr, name);
             rooms_state.insert(room.clone(), peer);
             println!("{:?}", rooms_state);
-
         }
     }
     fn new(
@@ -232,9 +234,9 @@ impl Peer {
                 s.extend_from_slice(peer_name);
                 i += 1;
                 if i % 5 == 0 {
-                    s.extend_from_slice(b"\r\n");
+                    s.extend_from_slice(b",\r\n");
                 } else {
-                    s.extend_from_slice(b" ");
+                    s.extend_from_slice(b", ");
                 }
             }
         } else {
@@ -243,13 +245,14 @@ impl Peer {
                     s.extend_from_slice(peer_name);
                     i += 1;
                     if i % 5 == 0 {
-                        s.extend_from_slice(b"\r\n");
+                        s.extend_from_slice(b",\r\n");
                     } else {
-                        s.extend_from_slice(b" ");
+                        s.extend_from_slice(b", ");
                     }
                 }
             }
         }
+        s.extend_from_slice(b"\r\n");
         s
     }
 
@@ -261,7 +264,11 @@ impl Peer {
                         return Ok(Async::Ready(()));
                     } else {
                         let rooms_state = &mut self.rooms_state.lock().unwrap().0;
-                        let peer_name = rooms_state.get_mut(&self.room).unwrap().remove(&self.addr).unwrap();
+                        let peer_name = rooms_state
+                            .get_mut(&self.room)
+                            .unwrap()
+                            .remove(&self.addr)
+                            .unwrap();
                         self.room = room.clone();
                         if let Some(peer) = rooms_state.get_mut(&self.room) {
                             peer.insert(self.addr, peer_name);
@@ -277,9 +284,10 @@ impl Peer {
                         }
                         return Ok(Async::Ready(()));
                     }
+                    return Ok(Async::Ready(()));
                 }
+                return Ok(Async::NotReady);
             }
-            //return Ok(Async::NotReady);
         }
     }
 }
@@ -365,6 +373,22 @@ impl Future for Peer {
                     Some(Service::Rooms) => {
                         let _ = try_ready!(io::write_all(
                             &self.lines.socket,
+                            &self.rooms_state.lock().unwrap().get_room_names()
+                        )
+                        .poll());
+                        continue;
+                    }
+                    Some(Service::Peers) => {
+                        let _ = try_ready!(io::write_all(
+                            &self.lines.socket,
+                            &self.get_peer_names(false)
+                        )
+                        .poll());
+                        continue;
+                    }
+                    Some(Service::ChangeRoom) => {
+                        let _ = try_ready!(io::write_all(
+                            &self.lines.socket,
                             b"\r\nSelect room to shift: "
                         )
                         .poll());
@@ -374,14 +398,6 @@ impl Future for Peer {
                         )
                         .poll());
                         let _ = self.select_room();
-                        continue;
-                    }
-                    Some(Service::Peers) => {
-                        let _ = try_ready!(io::write_all(
-                            &self.lines.socket,
-                            &self.get_peer_names(false)
-                        )
-                        .poll());
                         continue;
                     }
                     _ => {
@@ -435,9 +451,13 @@ impl Future for Peer {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.state.lock().unwrap().peers.remove(&self.addr);
-        let mut rooms_state = &mut self.rooms_state.lock().unwrap().0;
-        rooms_state.get_mut(&self.room).unwrap().remove(&self.addr).unwrap();
-        for (ref room,  ref peers) in rooms_state.clone() {
+        let rooms_state = &mut self.rooms_state.lock().unwrap().0;
+        rooms_state
+            .get_mut(&self.room)
+            .unwrap()
+            .remove(&self.addr)
+            .unwrap();
+        for (ref room, ref peers) in rooms_state.clone() {
             if peers.is_empty() {
                 rooms_state.remove(room);
             }
