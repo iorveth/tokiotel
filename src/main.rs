@@ -36,7 +36,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
 
 use chrono::{DateTime, Local, Timelike};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use AsyncWrite;
@@ -56,23 +56,28 @@ type Rx = mpsc::UnboundedReceiver<Bytes>;
 
 enum Service {
     RoomPeers,
-    Rooms,
     Room,
+    Rooms,
+    Peers,
 }
 
 lazy_static! {
     static ref SERVICE_COMMANDS: HashMap<BytesMut, Service> = {
         let mut commands = HashMap::new();
-        commands.insert(BytesMut::from("/peers"), Service::RoomPeers);
-        commands.insert(BytesMut::from("/rooms"), Service::Rooms);
+        commands.insert(BytesMut::from("/room_peers"), Service::RoomPeers);
         commands.insert(BytesMut::from("/room"), Service::Room);
+        commands.insert(BytesMut::from("/rooms"), Service::Rooms);
+        commands.insert(BytesMut::from("/peers"), Service::Peers);
         commands
     };
 }
 
 struct Shared {
-    peers: HashMap<SocketAddr, (Tx, BytesMut)>,
+    peers: HashMap<SocketAddr, Tx>,
 }
+
+//Room name - (SocketAddr, Peer name)
+struct SharedRooms(HashMap<BytesMut, HashMap<SocketAddr, BytesMut>>);
 
 /// The state for each connected client.
 struct Peer {
@@ -116,7 +121,7 @@ struct Peer {
 
     room: BytesMut,
 
-    rooms: Arc<Mutex<SharedRooms>>,
+    rooms_state: Arc<Mutex<SharedRooms>>,
 }
 
 /// Line based codec
@@ -140,24 +145,22 @@ struct Lines {
     wr: BytesMut,
 }
 
-struct SharedRooms(HashSet<BytesMut>);
-
 impl SharedRooms {
     fn new() -> Self {
-        SharedRooms(HashSet::new())
+        SharedRooms(HashMap::new())
     }
 
     fn get_room_names(&self) -> BytesMut {
         let mut i = 0_u32;
         let mut s = BytesMut::from("\r\nRooms list: ");;
-        self.0.iter().for_each(|elem| {
-            s.extend_from_slice(elem);
+        self.0.keys().for_each(|room| {
+            s.extend_from_slice(room);
+            i += 1;
             if i % 5 == 0 {
                 s.extend_from_slice(b"\r\n");
             } else {
                 s.extend_from_slice(b" ");
             }
-            i += 1;
         });
         s
     }
@@ -174,12 +177,31 @@ impl Shared {
 
 impl Peer {
     /// Create a new instance of `Peer`.
+    fn set_rooms_state(
+        rooms: Arc<Mutex<SharedRooms>>,
+        room: BytesMut,
+        addr: SocketAddr,
+        name: BytesMut,
+    ) {
+        let rooms_state = &mut rooms.lock().unwrap().0;
+        if rooms_state.contains_key(&room) {
+            let peers = rooms_state.get_mut(&room).unwrap();
+            peers.insert(addr, name);
+            println!("{:?}", rooms_state);
+        } else {
+            let mut peer = HashMap::new();
+            peer.insert(addr, name);
+            rooms_state.insert(room.clone(), peer);
+            println!("{:?}", rooms_state);
+
+        }
+    }
     fn new(
         name: BytesMut,
         state: Arc<Mutex<Shared>>,
         lines: Lines,
         room: BytesMut,
-        rooms: Arc<Mutex<SharedRooms>>,
+        rooms_state: Arc<Mutex<SharedRooms>>,
     ) -> Peer {
         // Get the client socket address
         let addr = lines.socket.peer_addr().unwrap();
@@ -188,8 +210,8 @@ impl Peer {
         let (tx, rx) = mpsc::unbounded();
 
         // Add an entry for this `Peer` in the shared state map.
-        state.lock().unwrap().peers.insert(addr, (tx, room.clone()));
-        rooms.lock().unwrap().0.insert(room.clone());
+        state.lock().unwrap().peers.insert(addr, tx);
+        Peer::set_rooms_state(rooms_state.clone(), room.clone(), addr, name.clone());
         Peer {
             name,
             lines,
@@ -197,22 +219,35 @@ impl Peer {
             rx,
             addr,
             room,
-            rooms,
+            rooms_state,
         }
     }
 
-    fn get_room_peer_names(&self) -> BytesMut {
+    fn get_peer_names(&self, room_flag: bool) -> BytesMut {
         let mut i = 0_u32;
-        let mut s = BytesMut::from("Available peers: ");
-        for (_, (_, room)) in &self.state.lock().unwrap().peers {
-            if self.room == room {
-                s.extend_from_slice(&self.name);
+        let mut s = BytesMut::from("\r\nAvailable peers: ");
+        let rooms_state = &self.rooms_state.lock().unwrap().0;
+        if room_flag {
+            for (_, peer_name) in rooms_state.get(&self.room).unwrap() {
+                s.extend_from_slice(peer_name);
+                i += 1;
                 if i % 5 == 0 {
                     s.extend_from_slice(b"\r\n");
                 } else {
                     s.extend_from_slice(b" ");
                 }
-                i += 1;
+            }
+        } else {
+            for (_, peers) in rooms_state {
+                for (_, peer_name) in peers {
+                    s.extend_from_slice(peer_name);
+                    i += 1;
+                    if i % 5 == 0 {
+                        s.extend_from_slice(b"\r\n");
+                    } else {
+                        s.extend_from_slice(b" ");
+                    }
+                }
             }
         }
         s
@@ -222,13 +257,29 @@ impl Peer {
         loop {
             if let Async::Ready(line) = self.lines.poll()? {
                 if let Some(room) = line {
-                    self.room = room.clone();
-                    self.rooms.lock().unwrap().0.insert(room);
-                    let (tx, _) = self.state.lock().unwrap().peers.remove(&self.addr).unwrap();
-                    self.state.lock().unwrap().peers.insert(self.addr, (tx, self.room.clone()));
-                    return Ok(Async::Ready(()));
+                    if self.room == room {
+                        return Ok(Async::Ready(()));
+                    } else {
+                        let rooms_state = &mut self.rooms_state.lock().unwrap().0;
+                        let peer_name = rooms_state.get_mut(&self.room).unwrap().remove(&self.addr).unwrap();
+                        self.room = room.clone();
+                        if let Some(peer) = rooms_state.get_mut(&self.room) {
+                            peer.insert(self.addr, peer_name);
+                        } else {
+                            let mut peer = HashMap::new();
+                            peer.insert(self.addr, peer_name);
+                            rooms_state.insert(self.room.clone(), peer);
+                        }
+                        for (ref room, ref peers) in rooms_state.clone() {
+                            if peers.is_empty() {
+                                rooms_state.remove(room);
+                            }
+                        }
+                        return Ok(Async::Ready(()));
+                    }
                 }
             }
+            //return Ok(Async::NotReady);
         }
     }
 }
@@ -296,24 +347,44 @@ impl Future for Peer {
             if let Some(message) = line {
                 match SERVICE_COMMANDS.get(&message) {
                     Some(Service::RoomPeers) => {
-                        let _ = self.lines.socket.write_all(&self.get_room_peer_names());
-                        continue;
-                    }
-                    Some(Service::Rooms) => {
-                        let _ = self.lines.socket.write_all(b"\r\nSelect room to shift: ");
-                        let _ = self
-                            .lines
-                            .socket
-                            .write_all(&self.rooms.lock().unwrap().get_room_names());
-                        let _ = self.select_room();
+                        let _ = try_ready!(io::write_all(
+                            &self.lines.socket,
+                            &self.get_peer_names(true)
+                        )
+                        .poll());
                         continue;
                     }
                     Some(Service::Room) => {
-                        let _ = self.lines.socket.write_all(b"\r\nCurrent room: ");
-                        let _ = self.lines.socket.write_all(&self.room);
+                        let _ =
+                            try_ready!(
+                                io::write_all(&self.lines.socket, b"\r\nCurrent room: ").poll()
+                            );
+                        let _ = try_ready!(io::write_all(&self.lines.socket, &self.room).poll());
                         continue;
                     }
-                    None => {
+                    Some(Service::Rooms) => {
+                        let _ = try_ready!(io::write_all(
+                            &self.lines.socket,
+                            b"\r\nSelect room to shift: "
+                        )
+                        .poll());
+                        let _ = try_ready!(io::write_all(
+                            &self.lines.socket,
+                            &self.rooms_state.lock().unwrap().get_room_names()
+                        )
+                        .poll());
+                        let _ = self.select_room();
+                        continue;
+                    }
+                    Some(Service::Peers) => {
+                        let _ = try_ready!(io::write_all(
+                            &self.lines.socket,
+                            &self.get_peer_names(false)
+                        )
+                        .poll());
+                        continue;
+                    }
+                    _ => {
                         // Append the peer's name to the front of the line:
                         let dt: DateTime<Local> = Local::now();
                         let date = format!("{}:{}:{} ", dt.hour(), dt.minute(), dt.second());
@@ -330,11 +401,13 @@ impl Future for Peer {
                         // converts it from mutable -> immutable, allowing zero copy
                         // cloning.
                         let line = line.freeze();
-
                         // Now, send the line to all other peers
-                        for (addr, (tx, room)) in &self.state.lock().unwrap().peers {
+                        let room_state = &self.rooms_state.lock().unwrap().0;
+                        for (addr, tx) in &self.state.lock().unwrap().peers {
                             // Don't send the message to ourselves
-                            if *addr != self.addr && *room == self.room {
+                            if *addr != self.addr
+                                && room_state.get(&self.room).unwrap().contains_key(&addr)
+                            {
                                 // The send only fails if the rx half has been dropped,
                                 // however this is impossible as the `tx` half will be
                                 // removed from the map before the `rx` is dropped.
@@ -361,10 +434,13 @@ impl Future for Peer {
 
 impl Drop for Peer {
     fn drop(&mut self) {
-        let peers = &mut self.state.lock().unwrap().peers;
-        peers.remove(&self.addr);
-        if peers.iter().all(|(_, (_, room))| *room != self.room) {
-            self.rooms.lock().unwrap().0.remove(&self.room);
+        self.state.lock().unwrap().peers.remove(&self.addr);
+        let mut rooms_state = &mut self.rooms_state.lock().unwrap().0;
+        rooms_state.get_mut(&self.room).unwrap().remove(&self.addr).unwrap();
+        for (ref room,  ref peers) in rooms_state.clone() {
+            if peers.is_empty() {
+                rooms_state.remove(room);
+            }
         }
     }
 }
@@ -471,7 +547,7 @@ impl Stream for Lines {
 ///
 /// This will read the first line from the socket to identify the client, then
 /// add the client to the set of connected peers in the chat service.
-fn process(socket: TcpStream, rooms: Arc<Mutex<SharedRooms>>, state: Arc<Mutex<Shared>>) {
+fn process(socket: TcpStream, rooms_state: Arc<Mutex<SharedRooms>>, state: Arc<Mutex<Shared>>) {
     // Wrap the socket with the `Lines` codec that we wrote above.
     //
     // By doing this, we can operate at the line level instead of doing raw byte
@@ -493,7 +569,7 @@ fn process(socket: TcpStream, rooms: Arc<Mutex<SharedRooms>>, state: Arc<Mutex<S
         .map_err(|(e, _)| e)
         // Process the first received line as the client's name.
         .and_then(|(room, mut lines)| {
-            let _ = lines.socket.write_all(b"\r\nSelect a nickname:\r\n");
+            //let _ = lines.socket.write_all(b"\r\nSelect a nickname:\r\n");
 
             // If `name` is `None`, then the client disconnected without
             // actually sending a line of data.
@@ -519,6 +595,7 @@ fn process(socket: TcpStream, rooms: Arc<Mutex<SharedRooms>>, state: Arc<Mutex<S
             };
 
             println!("joining the room: `{:?}`", room);
+            let _ = lines.socket.write_all(b"\r\nSelect a nickname:\r\n");
             let connect = lines
                 .into_future()
                 .map_err(|(e, _)| e)
@@ -531,7 +608,9 @@ fn process(socket: TcpStream, rooms: Arc<Mutex<SharedRooms>>, state: Arc<Mutex<S
                             return Either::A(future::ok(()));
                         }
                     };
-                    let peer = Peer::new(name, state, lines, room, rooms);
+
+                    println!("`{:?}` joining the room: ", name);
+                    let peer = Peer::new(name, state, lines, room, rooms_state);
                     // Wrap `peer` with `Either::B` to make the return type fit.
                     Either::B(peer)
                 });
@@ -555,7 +634,7 @@ pub fn main() -> Result<(), Box<std::error::Error>> {
     // client connection.
     let state = Arc::new(Mutex::new(Shared::new()));
 
-    let rooms = Arc::new(Mutex::new(SharedRooms::new()));
+    let rooms_state = Arc::new(Mutex::new(SharedRooms::new()));
 
     let addr = "127.0.0.1:6142".parse()?;
 
@@ -569,8 +648,8 @@ pub fn main() -> Result<(), Box<std::error::Error>> {
     let server = listener
         .incoming()
         .for_each(move |socket| {
-            let rooms_list = rooms.lock().unwrap().get_room_names();
-            let rooms = rooms.clone();
+            let rooms_list = rooms_state.lock().unwrap().get_room_names();
+            let rooms = rooms_state.clone();
             let state = state.clone();
 
             let connect = io::write_all(socket, "Please, select a room or create a new one:")
