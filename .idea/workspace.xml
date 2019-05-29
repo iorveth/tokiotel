@@ -27,8 +27,8 @@
       <file pinned="false" current-in-tab="true">
         <entry file="file://$PROJECT_DIR$/src/main.rs">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="390">
-              <caret line="410" column="48" selection-start-line="410" selection-start-column="48" selection-end-line="410" selection-end-column="48" />
+            <state relative-caret-position="188">
+              <caret line="402" column="26" lean-forward="true" selection-start-line="402" selection-start-column="26" selection-end-line="402" selection-end-column="26" />
               <folding>
                 <element signature="e#4726#4727#0" expanded="true" />
                 <element signature="e#4768#4769#0" expanded="true" />
@@ -120,6 +120,7 @@
       <find>received</find>
       <find>SharedRooms</find>
       <find>Drop</find>
+      <find>task::current().notify();</find>
     </findStrings>
   </component>
   <component name="Git.Settings">
@@ -225,7 +226,7 @@
       <workItem from="1558201089400" duration="1199000" />
       <workItem from="1558253776437" duration="1797000" />
       <workItem from="1558384935396" duration="4421000" />
-      <workItem from="1558791610030" duration="93899000" />
+      <workItem from="1558791610030" duration="103747000" />
     </task>
     <task id="LOCAL-00001" summary="Service commands implementation started">
       <created>1558901161220</created>
@@ -248,11 +249,18 @@
       <option name="project" value="LOCAL" />
       <updated>1559067668812</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="trying to resolve /change_room issue">
+      <created>1559151985752</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1559151985752</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TimeTrackingManager">
-    <option name="totallyTimeSpent" value="197635000" />
+    <option name="totallyTimeSpent" value="207483000" />
   </component>
   <component name="ToolWindowManager">
     <frame x="-8" y="-8" width="1382" height="744" extended-state="6" />
@@ -261,17 +269,18 @@
       <window_info content_ui="combo" id="Project" order="0" visible="true" weight="0.12708019" />
       <window_info id="Structure" order="1" side_tool="true" weight="0.25" />
       <window_info id="Favorites" order="2" side_tool="true" />
+      <window_info anchor="bottom" id="Messages" sideWeight="0.32526475" weight="0.1603928" />
       <window_info anchor="bottom" id="Message" order="0" />
       <window_info anchor="bottom" id="Find" order="1" />
-      <window_info active="true" anchor="bottom" id="Run" order="2" sideWeight="0.84039336" visible="true" weight="0.39934534" />
+      <window_info active="true" anchor="bottom" id="Run" order="2" sideWeight="0.8388805" visible="true" weight="0.34042552" />
       <window_info anchor="bottom" id="Debug" order="3" weight="0.4" />
       <window_info anchor="bottom" id="Cvs" order="4" weight="0.25" />
       <window_info anchor="bottom" id="Inspection" order="5" weight="0.4" />
       <window_info anchor="bottom" id="TODO" order="6" />
       <window_info anchor="bottom" id="Database Changes" order="7" />
       <window_info anchor="bottom" id="Version Control" order="8" />
-      <window_info anchor="bottom" id="Terminal" order="9" sideWeight="0.48789713" weight="0.3289689" />
-      <window_info anchor="bottom" id="Event Log" order="10" sideWeight="0.15960665" side_tool="true" visible="true" weight="0.39934534" />
+      <window_info anchor="bottom" id="Terminal" order="9" sideWeight="0.4871407" weight="0.3289689" />
+      <window_info anchor="bottom" id="Event Log" order="10" sideWeight="0.16111952" side_tool="true" visible="true" weight="0.34042552" />
       <window_info anchor="right" id="Commander" internal_type="SLIDING" order="0" type="SLIDING" weight="0.4" />
       <window_info anchor="right" id="Ant Build" order="1" weight="0.25" />
       <window_info anchor="right" content_ui="combo" id="Hierarchy" order="2" weight="0.25" />
@@ -286,7 +295,8 @@
     <MESSAGE value="Service commands implementation started" />
     <MESSAGE value="Working on service commands implementation" />
     <MESSAGE value="/change_room service command added" />
-    <option name="LAST_COMMIT_MESSAGE" value="/change_room service command added" />
+    <MESSAGE value="trying to resolve /change_room issue" />
+    <option name="LAST_COMMIT_MESSAGE" value="trying to resolve /change_room issue" />
   </component>
   <component name="editorHistoryManager">
     <entry file="file://$USER_HOME$/.cargo/registry/src/github.com-1ecc6299db9ec823/bytes-0.4.12/src/buf/buf_mut.rs">
@@ -386,8 +396,8 @@
     </entry>
     <entry file="file://$PROJECT_DIR$/src/main.rs">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="390">
-          <caret line="410" column="48" selection-start-line="410" selection-start-column="48" selection-end-line="410" selection-end-column="48" />
+        <state relative-caret-position="188">
+          <caret line="402" column="26" lean-forward="true" selection-start-line="402" selection-start-column="26" selection-end-line="402" selection-end-column="26" />
           <folding>
             <element signature="e#4726#4727#0" expanded="true" />
             <element signature="e#4768#4769#0" expanded="true" />

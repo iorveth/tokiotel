@@ -257,11 +257,10 @@ impl Peer {
     }
 
     fn select_room(&mut self) -> Poll<Option<()>, io::Error> {
+        loop {
             if let Async::Ready(line) = self.lines.poll()? {
                 if let Some(room) = line {
-                    if self.room == room {
-                        Ok(Async::Ready(Some(())))
-                    } else {
+                    if self.room != room {
                         let rooms_state = &mut self.rooms_state.lock().unwrap().0;
                         let peer_name = rooms_state
                             .get_mut(&self.room)
@@ -280,15 +279,14 @@ impl Peer {
                             if peers.is_empty() {
                                 rooms_state.remove(room);
                             }
-                        };
-                        Ok(Async::Ready(Some(())))
+                        }
                     }
+                    return Ok(Async::Ready(Some(())));
                 } else {
-                    Ok(Async::Ready(None))
+                    return Ok(Async::Ready(None));
                 }
-            } else {
-                Ok(Async::NotReady)
             }
+        }
     }
 }
 
@@ -347,7 +345,7 @@ impl Future for Peer {
         let _ = self.lines.poll_flush()?;
 
         // Read new lines from the socket
-        'a: while let Async::Ready(line) = self.lines.poll()? {
+        while let Async::Ready(line) = self.lines.poll()? {
             println!(
                 "Received line ({:?}) : {:?}) : {:?}",
                 self.room, self.name, line
@@ -397,26 +395,12 @@ impl Future for Peer {
                             &self.rooms_state.lock().unwrap().get_room_names()
                         )
                         .poll());
-                        loop {
-                            match self.select_room() {
-                                Ok(Async::Ready(Some(()))) => {
-                                    println!("Hui");
-                                    continue 'a
-                                },
-                                Ok(Async::Ready(None)) => {
-                                    println!("None");
-                                    return Ok(Async::Ready(()))
-                                },
-                                Err(e) => {
-                                    println!("Error");
-                                    return Err(e)
-                                },
-                                Ok(Async::NotReady) => {
-                                    println!("not ready");
-                                    return Ok(Async::NotReady)
-                                }
-                            }
-                        }
+                        let state = self.select_room();
+                        match state {
+                            Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
+                            Err(e) => return Err(e),
+                            _ => continue
+                        };
                     }
                     _ => {
                         // Append the peer's name to the front of the line:
