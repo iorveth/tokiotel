@@ -257,7 +257,6 @@ impl Peer {
     }
 
     fn select_room(&mut self) -> Poll<Option<()>, io::Error> {
-        loop {
             if let Async::Ready(line) = self.lines.poll()? {
                 if let Some(room) = line {
                     if self.room != room {
@@ -281,12 +280,13 @@ impl Peer {
                             }
                         }
                     }
-                    return Ok(Async::Ready(Some(())));
+                    Ok(Async::Ready(Some(())))
                 } else {
-                    return Ok(Async::Ready(None));
+                    Ok(Async::Ready(None))
                 }
+            } else {
+                Ok(Async::NotReady)
             }
-        }
     }
 }
 
@@ -345,7 +345,7 @@ impl Future for Peer {
         let _ = self.lines.poll_flush()?;
 
         // Read new lines from the socket
-        while let Async::Ready(line) = self.lines.poll()? {
+        'a: while let Async::Ready(line) = self.lines.poll()? {
             println!(
                 "Received line ({:?}) : {:?}) : {:?}",
                 self.room, self.name, line
@@ -395,12 +395,25 @@ impl Future for Peer {
                             &self.rooms_state.lock().unwrap().get_room_names()
                         )
                         .poll());
-                        let state = self.select_room();
-                        match state {
-                            Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
-                            Err(e) => return Err(e),
-                            _ => continue
-                        };
+                        loop {
+                            match self.select_room() {
+                                Ok(Async::Ready(Some(()))) => {
+                                    println!("Ready");
+                                    continue 'a
+                                },
+                                Ok(Async::Ready(None)) => {
+                                    println!("None");
+                                    return Ok(Async::Ready(()))
+                                },
+                                Err(e) => {
+                                    println!("Error");
+                                    return Err(e)
+                                },
+                                Ok(Async::NotReady) => {
+                                    println!("NotReady");
+                                }
+                            }
+                        }
                     }
                     _ => {
                         // Append the peer's name to the front of the line:
