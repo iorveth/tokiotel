@@ -38,6 +38,7 @@ use tokio::prelude::*;
 use chrono::{DateTime, Local, Timelike};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use AsyncWrite;
 
@@ -124,6 +125,8 @@ struct Peer {
     room: BytesMut,
 
     rooms_state: Arc<Mutex<SharedRooms>>,
+
+    service_lock: AtomicBool,
 }
 
 /// Line based codec
@@ -222,6 +225,7 @@ impl Peer {
             addr,
             room,
             rooms_state,
+            service_lock: AtomicBool::new(false),
         }
     }
 
@@ -256,37 +260,28 @@ impl Peer {
         s
     }
 
-    fn select_room(&mut self) -> Poll<Option<()>, io::Error> {
-            if let Async::Ready(line) = self.lines.poll()? {
-                if let Some(room) = line {
-                    if self.room != room {
-                        let rooms_state = &mut self.rooms_state.lock().unwrap().0;
-                        let peer_name = rooms_state
-                            .get_mut(&self.room)
-                            .unwrap()
-                            .remove(&self.addr)
-                            .unwrap();
-                        self.room = room.clone();
-                        if let Some(peer) = rooms_state.get_mut(&self.room) {
-                            peer.insert(self.addr, peer_name);
-                        } else {
-                            let mut peer = HashMap::new();
-                            peer.insert(self.addr, peer_name);
-                            rooms_state.insert(self.room.clone(), peer);
-                        }
-                        for (ref room, ref peers) in rooms_state.clone() {
-                            if peers.is_empty() {
-                                rooms_state.remove(room);
-                            }
-                        }
-                    }
-                    Ok(Async::Ready(Some(())))
-                } else {
-                    Ok(Async::Ready(None))
-                }
+    fn select_room(&mut self, room: BytesMut) {
+        if self.room != room {
+            let rooms_state = &mut self.rooms_state.lock().unwrap().0;
+            let peer_name = rooms_state
+                .get_mut(&self.room)
+                .unwrap()
+                .remove(&self.addr)
+                .unwrap();
+            self.room = room.clone();
+            if let Some(peer) = rooms_state.get_mut(&self.room) {
+                peer.insert(self.addr, peer_name);
             } else {
-                Ok(Async::NotReady)
+                let mut peer = HashMap::new();
+                peer.insert(self.addr, peer_name);
+                rooms_state.insert(self.room.clone(), peer);
             }
+            for (room, peers) in rooms_state.clone() {
+                if peers.is_empty() {
+                    rooms_state.remove(&room);
+                }
+            }
+        }
     }
 }
 
@@ -345,13 +340,17 @@ impl Future for Peer {
         let _ = self.lines.poll_flush()?;
 
         // Read new lines from the socket
-        'a: while let Async::Ready(line) = self.lines.poll()? {
+        let mut command = Some(&Service::ChangeRoom);
+        while let Async::Ready(line) = self.lines.poll()? {
             println!(
                 "Received line ({:?}) : {:?}) : {:?}",
                 self.room, self.name, line
             );
             if let Some(message) = line {
-                match SERVICE_COMMANDS.get(&message) {
+                if !self.service_lock.load(Ordering::Relaxed) {
+                    command = SERVICE_COMMANDS.get(&message);
+                }
+                match command {
                     Some(Service::RoomPeers) => {
                         let _ = try_ready!(io::write_all(
                             &self.lines.socket,
@@ -385,35 +384,25 @@ impl Future for Peer {
                         continue;
                     }
                     Some(Service::ChangeRoom) => {
-                        let _ = try_ready!(io::write_all(
-                            &self.lines.socket,
-                            b"\r\nSelect room to shift: "
-                        )
-                        .poll());
-                        let _ = try_ready!(io::write_all(
-                            &self.lines.socket,
-                            &self.rooms_state.lock().unwrap().get_room_names()
-                        )
-                        .poll());
-                        loop {
-                            match self.select_room() {
-                                Ok(Async::Ready(Some(()))) => {
-                                    println!("Ready");
-                                    continue 'a
-                                },
-                                Ok(Async::Ready(None)) => {
-                                    println!("None");
-                                    return Ok(Async::Ready(()))
-                                },
-                                Err(e) => {
-                                    println!("Error");
-                                    return Err(e)
-                                },
-                                Ok(Async::NotReady) => {
-                                    println!("NotReady");
-                                }
-                            }
+                        if !self.service_lock.load(Ordering::Relaxed) {
+                            let _ = try_ready!(io::write_all(
+                                &self.lines.socket,
+                                b"\r\nSelect room to shift: "
+                            )
+                            .poll());
+                            let _ = try_ready!(io::write_all(
+                                &self.lines.socket,
+                                &self.rooms_state.lock().unwrap().get_room_names()
+                            )
+                            .poll());
+                            self.service_lock.store(true, Ordering::Relaxed);
+                            command = Some(&Service::ChangeRoom);
+                        } else {
+                            self.select_room(message);
+                            //println!("{}", service_lock);
+                            self.service_lock.store(false, Ordering::Relaxed);
                         }
+                        continue;
                     }
                     _ => {
                         // Append the peer's name to the front of the line:
@@ -472,7 +461,7 @@ impl Drop for Peer {
             .unwrap()
             .remove(&self.addr)
             .unwrap();
-        for (ref room, ref peers) in rooms_state.clone() {
+        for (room, peers) in &rooms_state.clone() {
             if peers.is_empty() {
                 rooms_state.remove(room);
             }
