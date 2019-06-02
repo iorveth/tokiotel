@@ -543,15 +543,17 @@ impl Future for Peer {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.state.lock().unwrap().peers.remove(&self.addr);
-        let rooms_state = &mut self.rooms_state.lock().unwrap().0;
-        rooms_state
-            .get_mut(&self.room)
-            .unwrap()
-            .remove(&self.addr)
-            .unwrap();
-        for (room, peers) in &rooms_state.clone() {
-            if peers.is_empty() {
-                rooms_state.remove(room);
+        if self.name != BytesMut::default() {
+            let rooms_state = &mut self.rooms_state.lock().unwrap().0;
+            rooms_state
+                .get_mut(&self.room)
+                .unwrap()
+                .remove(&self.addr)
+                .unwrap();
+            for (room, peers) in &rooms_state.clone() {
+                if peers.is_empty() {
+                    rooms_state.remove(room);
+                }
             }
         }
     }
