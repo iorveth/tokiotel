@@ -63,6 +63,7 @@ enum Service {
     Peers,
     ChangeRoom,
     ChangeName,
+    P2P,
 }
 
 impl Service {
@@ -74,6 +75,8 @@ impl Service {
         s.extend_from_slice(b"/rooms - Get the names of all available rooms\r\n");
         s.extend_from_slice(b"/change_room - Go to another avaible room or create a new one if the is no room with specified name\r\n");
         s.extend_from_slice(b"/change_name - Change your nickname (must be uniq)\r\n");
+        s.extend_from_slice(b"/p2p - Peer to peer messages among all users (private messages)\r\n");
+        s.extend_from_slice(b"/default - Return to default chat from p2p\r\n");
         s
     }
 }
@@ -88,6 +91,7 @@ lazy_static! {
         commands.insert(BytesMut::from("/peers"), Service::Peers);
         commands.insert(BytesMut::from("/change_room"), Service::ChangeRoom);
         commands.insert(BytesMut::from("/change_name"), Service::ChangeName);
+        commands.insert(BytesMut::from("/p2p"), Service::P2P);
         commands
     };
 }
@@ -178,6 +182,7 @@ struct Peer {
     service_lock: bool,
 
     enabled_command: Option<Service>,
+    p2p_receiver: Option<BytesMut>,
 }
 
 /// Line based codec
@@ -259,6 +264,7 @@ impl Peer {
             rooms_state,
             service_lock: false,
             enabled_command: None,
+            p2p_receiver: None,
         }
     }
 
@@ -494,32 +500,89 @@ impl Future for Peer {
                         }
                         continue;
                     }
-                    _ => {
+                    Some(Service::P2P) | _ => {
                         // Append the peer's name to the front of the line:
                         let dt: DateTime<Local> = Local::now();
                         let date = format!("{}:{}:{} ", dt.hour(), dt.minute(), dt.second());
                         let mut line = BytesMut::from(date);
-                        line.extend(&self.name);
-                        line.extend_from_slice(b": ");
-                        line.extend_from_slice(&message);
-                        line.extend_from_slice(b"\r\n");
-
                         // We're using `Bytes`, which allows zero-copy clones (by
                         // storing the data in an Arc internally).
                         //
                         // However, before cloning, we must freeze the data. This
                         // converts it from mutable -> immutable, allowing zero copy
                         // cloning.
-                        let line = line.freeze();
+
                         // Now, send the line to all other peers
-                        let room_state = &self.rooms_state.lock().unwrap().0;
-                        for (addr, tx) in &self.state.lock().unwrap().peers {
-                            // Don't send the message to ourselves
-                            if room_state.get(&self.room).unwrap().contains_key(&addr) {
-                                // The send only fails if the rx half has been dropped,
-                                // however this is impossible as the `tx` half will be
-                                // removed from the map before the `rx` is dropped.
-                                tx.unbounded_send(line.clone()).unwrap();
+                        if let Some(Service::P2P) = command {
+                            if !self.service_lock {
+                                let _ = try_ready!(io::write_all(
+                                    &self.lines.socket,
+                                    &self.get_peer_names(false)
+                                )
+                                .poll());
+                                self.service_lock = true;
+                                self.enabled_command = Some(Service::P2P);
+                            } else if message == "/default" {
+                                self.service_lock = false;
+                                self.enabled_command = None;
+                                self.p2p_receiver = None;
+                            } else if self.p2p_receiver.is_none()
+                                && self.rooms_state.lock().unwrap().contains_name(&message)
+                                && self.name != message
+                            {
+                                self.p2p_receiver = Some(message);
+                            } else if self.p2p_receiver.is_some() {
+                                line.extend_from_slice(b"p2p ");
+                                line.extend(&self.name);
+                                line.extend_from_slice(b": ");
+                                line.extend_from_slice(&message);
+                                line.extend_from_slice(b"\r\n");
+                                let line = line.freeze();
+                                for (_, peers) in &self.rooms_state.lock().unwrap().0 {
+                                    for (addr, name) in peers {
+                                        if Some(name) == self.p2p_receiver.as_ref() {
+                                            self.state
+                                                .lock()
+                                                .unwrap()
+                                                .peers
+                                                .get(&addr)
+                                                .unwrap()
+                                                .unbounded_send(line.clone())
+                                                .unwrap();
+                                        }
+                                    }
+                                }
+                            } else {
+                                let _ = try_ready!(io::write_all(
+                                    &self.lines.socket,
+                                    "\r\nNickname not found or you are trying communicate with yourself.\r\n"
+                                )
+                                .poll());
+                                self.service_lock = false;
+                            }
+                            continue;
+                        } else {
+                            line.extend(&self.name);
+                            line.extend_from_slice(b": ");
+                            line.extend_from_slice(&message);
+                            line.extend_from_slice(b"\r\n");
+                            let line = line.freeze();
+                            for (addr, tx) in &self.state.lock().unwrap().peers {
+                                // Don't send the message to ourselves
+                                if self
+                                    .rooms_state
+                                    .lock()
+                                    .unwrap()
+                                    .0
+                                    .get(&self.room)
+                                    .unwrap()
+                                    .contains_key(&addr)
+                                {
+                                    // The send only fails if the rx half has been dropped,
+                                    // however this is impossible as the `tx` half will be
+                                    // removed from the map before the `rx` is dropped.
+                                    tx.unbounded_send(line.clone()).unwrap();
+                                }
                             }
                         }
                     }
